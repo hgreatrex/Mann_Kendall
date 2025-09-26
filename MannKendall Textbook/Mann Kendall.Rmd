@@ -1,0 +1,550 @@
+---
+title: "Detecting trends - Mann Kendall"
+output:
+  rmdformats::material:
+    self_contained: true
+    default_style: "dark"
+    downcute_theme: "chaos"
+    highlight: "tango"
+---
+
+
+
+```{r, include=FALSE}
+
+# This makes a timeseries plot in a format that I like
+
+Plot_time <- function(data, column_name, title, xlab = "", ylab = "") {
+   
+   plot_out <- ggplot(data, aes_string(x = "1:nrow(data)", y = column_name)) +
+      geom_line(color = "darkgreen", size = 0.75) +
+      geom_point(color = "darkgreen", size = 2) +
+      labs(title = title, x = xlab, y = ylab) +
+      theme_minimal(base_size = 14) +
+      theme(
+         plot.title = element_text(hjust = 0.5, face = "bold"),
+         axis.title.x = element_text(face = "bold"),
+         axis.title.y = element_text(face = "bold"),
+         panel.grid.minor = element_blank()
+      )
+   
+   return(plot_out)
+}
+
+```
+
+
+# What is the Mann Kendall test
+
+The Mann-Kendall test is commonly used to detect trends in time series data, especially in environmental and climate studies. However, its correct application depends on several important assumptions:
+
+### 1. **Independence of Observations**
+
+-   **Assumption**: The observations in the time series are independent of each other, meaning there’s no serial correlation (autocorrelation) between them.
+
+-   **Reason**: If there is serial correlation, it can inflate the significance of the test, leading to an increased chance of falsely detecting a trend (Type I error).
+
+-   **Check**: For time series data, you can check for autocorrelation using techniques like the **Durbin-Watson test** or **autocorrelation function (ACF)** plots. If autocorrelation is present, adjustments to the test or pre-whitening of data might be needed.
+
+### 2. **Randomly Ordered Observations (No Seasonality)**
+
+-   **Assumption**: The data should not have seasonal patterns or cyclic behavior, which could create apparent trends that are not genuine.
+
+-   **Reason**: Seasonal effects can mimic trends in the data, making it seem as though a trend exists when it’s actually due to recurring patterns.
+
+-   **Check**: Look for seasonality using time series decomposition or seasonal autocorrelation patterns. If seasonality is present, seasonal Mann-Kendall tests or other modifications can help address this.
+
+### 3. **Continuous (Non-Categorical) Data**
+
+-   **Assumption**: The data should be ordinal, interval, or ratio-scaled (i.e., quantitative rather than categorical).
+
+-   **Reason**: The test relies on rank-based comparisons between data points. Categorical or nominal data can’t be ordered or ranked meaningfully, which makes the Mann-Kendall test inappropriate.
+
+-   **Alternative**: For categorical data, you might consider chi-square tests or other non-parametric methods designed for categorical variables.
+
+### 4. **Absence of Ties or Correct Tie Adjustment**
+
+-   **Assumption**: There should be minimal ties (i.e., duplicate values) in the data, or ties should be accounted for.
+
+-   **Reason**: Ties can affect the calculation of SSS and its variance, potentially leading to incorrect test statistics and p-values. The standard Mann-Kendall test includes adjustments for ties.
+
+-   **Check**: Check for ties in the data. If ties are frequent, make sure the chosen test (such as the `Kendall` package in R) applies appropriate corrections.
+
+### 5. **No Influential Outliers**
+
+-   **Assumption**: The test is less sensitive to outliers than parametric tests, but a high number of extreme outliers may still distort results.
+
+-   **Reason**: Since the Mann-Kendall test is based on ranks rather than raw values, it’s generally robust to outliers. However, a few extreme values could still skew the perceived trend direction.
+
+-   **Check**: Plot the data and visually inspect for extreme values. Consider using robust alternatives if the data has influential outliers.
+
+### Summary
+
+In brief, the Mann-Kendall test works best for:
+
+-   **Independent**, **non-autocorrelated** observations.
+
+-   **Non-seasonal** data or seasonally adjusted data.
+
+-   **Quantitative** data with minimal ties.
+
+-   Data with **no extreme outliers**.
+
+### When Adjustments Are Needed
+
+If your data violates any of these assumptions, consider modifications:
+
+-   **Autocorrelation**: Apply pre-whitening to remove autocorrelation before testing.
+
+-   **Seasonality**: Use the **seasonal Mann-Kendall test**, which adjusts for recurring patterns.
+
+-   **Ties**: Ensure the software used (like the `Kendall` package in R) correctly adjusts for ties.
+
+-   **Outliers**: Consider a robust version of the test if outliers are severe.
+
+These assumptions help ensure that the Mann-Kendall test provides a valid and reliable measure of trend significance in your data.
+
+# Test statistic
+
+```{r}
+rm(list=ls())
+
+library(readxl)
+library(ggplot2)
+library(readxl)
+MKAnslem <- read_excel("~/Desktop/MK_anslem.xlsx")
+library(Kendall)
+
+
+mann_kendall_statistic <- function(x) {
+  n <- length(x)
+  S <- 0
+  
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      diff <- x[j] - x[i]
+      if (diff > 0) {
+        S <- S + 1
+      } else if (diff < 0) {
+        S <- S - 1
+      }
+    }
+  }
+  
+  return(S)
+}
+```
+
+# Tests
+
+## Custom Complete Mann-Kendall Test
+
+```{r}
+
+
+complete_mann_kendall_test <- function(x) {
+  # Step 1: Calculate S
+  S <- mann_kendall_statistic(x)
+  n <- length(x)
+  
+  # Step 2: Calculate Kendall's tau
+  tau <- S / (n * (n - 1) / 2)
+  
+  # Step 3: Calculate the variance of S
+  variance_S <- (n * (n - 1) * (2 * n + 5)) / 18
+  
+  # Step 4: Calculate the Z-score
+  if (S > 0) {
+    Z <- (S - 1) / sqrt(variance_S)
+  } else if (S < 0) {
+    Z <- (S + 1) / sqrt(variance_S)
+  } else {
+    Z <- 0
+  }
+  
+  # Step 5: Calculate the two-tailed p-value
+  p_value <- 2 * (1 - pnorm(abs(Z)))
+  
+  # Return results in a similar format to Kendall::MannKendall
+  result <- list(tau = tau, p.value = p_value, S = S, Z = Z, variance = variance_S)
+  class(result) <- "MannKendall"
+  return(result)
+}
+
+```
+
+## Monte Carlo version
+
+```{r}
+monte_carlo_mann_kendall <- function(x, num_simulations = 10000) {
+  # Calculate the observed S
+  observed_S <- mann_kendall_statistic(x)
+  n <- length(x)
+  
+  # Calculate Kendall's tau
+  tau <- observed_S / (n * (n - 1) / 2)
+  
+  # Monte Carlo simulations
+  simulated_S <- numeric(num_simulations)
+  for (i in 1:num_simulations) {
+    shuffled_x <- sample(x, n, replace = FALSE)
+    simulated_S[i] <- mann_kendall_statistic(shuffled_x)
+  }
+  
+  # Empirical two-tailed p-value
+  p_value <- mean(abs(simulated_S) >= abs(observed_S))
+  
+  # Return results in a similar format to Kendall::MannKendall
+  result <- list(tau = tau, p.value = p_value, S = observed_S, simulated_S = simulated_S)
+  class(result) <- "MannKendall"
+  return(result)
+}
+
+```
+
+# testing it
+
+```{r}
+# Example usage
+time_series <- c(2, 4, 5, 3, 6)
+
+complete_mann_kendall_test(time_series)[1:2]
+```
+
+```{r}
+out <- monte_carlo_mann_kendall(time_series)
+out[1:2]
+```
+
+```{r}
+MannKendall(time_series)
+
+```
+
+# Common issues
+
+## [1] The perfect storm, trend length
+
+**It's the perfect storm for weather trends as satellite datasets reach 30-40 yrs old**
+
+Forty years is enough to begin identifying trends that are statistically significant, but the data lacks the power and length needed to easily filter out artifacts. Because shorter datasets are more sensitive to individual events, trends identified in these records can be less stable, prone to fluctuation with just a few years of added data.
+
+1.  Lots of "old" datasets in USA/europe to counteract this. - but we're going to see a surge in spurious trends in gauge sparse places/tropics.
+
+## [2] Human biases mean it's hard to see problems [to improve]
+
+-   **Memory**: Humans tend to remember an average of the most extreme and most recent events - and most people being interviewed are between 20-70 yrs old. So MK trends have the the potential to be doubly biased in the same directions that perceptions are,
+
+-   **Cognition**: Humans perceive trends as a step change (it's "rainier" than when I was a child), meaning that simple answers like MK are very attractive
+
+-   **Interacts with common biases:** Gamblers fallacy.
+
+## [3] Irregular **Outliers Driving Apparent Trends [complete]**
+
+This example highlights how irregular, high-impact events can skew trend interpretation with the Mann-Kendall test, particularly in time series of moderate length or with boundary effects from extreme values. While MK is generally robust to individual outliers, repeated extreme events—especially near the start or end of a series—can still mislead the test and create artificial trends.
+
+#### [**MK is *relatively* robust to individual outliers,**]{.underline} 
+
+*The non-parametric nature of the test and the fact that you're looking at a histogram of "upwards/downwards" movements mean that the test is relatively robust to extremes like this (in a way that would fool standard linear regression). For example, for each upward spike, you get a corresponding downwards spike, cancelling it out.*
+
+[**But it can still be fooled/mislead creating artificial trends.**]{.underline}
+
+-   **This is more of a problem if extreme events fall at the start or end of a time series**:\
+    When irregular events fall at the boundaries, MK may register only part of the event, interpreting it as a continuous trend rather than a temporary fluctuation.
+
+-   **This is more of a problem in short time series**:\
+    In longer time series, each year or event has less impact on the trend calculation, making MK less prone to artifacts from isolated extremes. In series over 50–60 years, a few extreme years are unlikely to produce a false trend. For shorter series, however, individual events play a proportionally larger role.
+
+-   **This is more of a problem if extreme events make up around 10–20% of a time series**:\
+    For example, in a 40-year series, 4–6 irregular extreme years could start to create a noticeable artifact.
+
+-   **This also links poorly with human biases**:\
+    Humans tend to remember an average of the most extreme and most recent events. So it's got the potential to be doubly biased in the same directions that perceptions are.
+
+### Example using R
+
+Here is a synthetic timep
+
+```{r, include=FALSE}
+# Plot for the first time series (el_nino1)
+plot_el_nino1 <- ggplot(MKAnslem, aes(x = 1:nrow(MKAnslem), y = el_nino1)) +
+  geom_line(color = "darkgreen", size = 1) +
+  geom_point(color = "darkgreen", size = 2) +
+  labs(
+    title = "El Niño-Like Time Series (Version 1)",
+    x = "Year",
+    y = "Value"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+```{r}
+plot_el_nino1
+MannKendall(MKAnslem$el_nino1[1:30])
+MannKendall(MKAnslem$el_nino1[1:31])
+
+```
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(Kendall)
+
+# Create a synthetic time series data with extended El Niño-like impacts (assuming data is already loaded in "extended_series")
+set.seed(42)
+n_years <- 100
+baseline_series <- rnorm(n_years, mean = 10, sd = 2)
+
+# Adding El Niño-like events to the end of the series
+el_nino_years <- sample(60:n_years, size = 8, replace = FALSE)
+baseline_series[el_nino_years] <- baseline_series[el_nino_years] + rnorm(length(el_nino_years), mean = 6, sd = 1.5)
+
+# Calculate Mann-Kendall Tau and P-Value for each 30-year window
+window_size <- 30
+tau_values <- c()
+p_values <- c()
+
+for (i in 1:(n_years - window_size + 1)) {
+  window_data <- baseline_series[i:(i + window_size - 1)]
+  mk_result <- MannKendall(window_data)
+  tau_values <- c(tau_values, mk_result$tau)
+  p_values <- c(p_values, mk_result$sl)
+}
+
+# Convert the results into a data frame for plotting
+plot_data <- data.frame(
+  StartYear = 1:(n_years - window_size + 1),
+  Tau = tau_values,
+  P_Value = p_values
+)
+
+# Plotting the results side by side
+p1 <- ggplot(plot_data, aes(x = StartYear, y = Tau)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(color = "steelblue", size = 2) +
+  labs(title = "Mann-Kendall Tau for Each 30-Year Window", x = "Starting Year of 30-Year Window", y = "Mann-Kendall Tau") +
+  theme_minimal()
+
+p2 <- ggplot(plot_data, aes(x = StartYear, y = P_Value)) +
+  geom_line(color = "darkorange", size = 1) +
+  geom_point(color = "darkorange", size = 2) +
+  labs(title = "Mann-Kendall P-Value for Each 30-Year Window", x = "Starting Year of 30-Year Window", y = "P-Value") +
+  theme_minimal()
+
+# Display the plots side by side
+library(gridExtra)
+grid.arrange(p1, p2, ncol = 2)
+
+```
+
+------------------------------------------------------------------------
+
+### Example in Weather Data
+
+This issue is especially relevant in regions impacted by periodic but unpredictable extremes:
+
+-   In many parts of the world, climate drivers like **ENSO (El Niño/La Niña)** occur approximately every 2–7 years and can often lead to intense rainfall or drought.
+
+-   On a shorter time scale, weather features such as the **Madden Julian Oscillation** can cause similar artifacts in weather time series.
+
+-   **Tropical cyclone-prone areas** (e.g., Southeast USA) experience irregular but intense events that can distort MK results.
+
+Most satellite time series are now around 30–50 years, so irregular events every 3–7 years create a “perfect storm” where ENSO extremes or cyclones are problematic. This range is short enough for individual events to have significant influence, but not long enough for them to fade into insignificance.
+
+------------------------------------------------------------------------
+
+### Recommendations
+
+If visual inspection isn’t feasible, use these methods to detect artifacts in weather data:
+
+-   **Segmented MK Test**: Run MK on early, middle, and late segments separately, or apply it within a moving window to detect whether your results are stable across the series.
+
+-   **Comparative Tests**: If you know of a potential issue (e.g. you know cyclones hit the area) run MK with and without years associated with impactful events (e.g., El Niño years) to check if exclusions alter the trend.
+
+-   **Boundary Check**: Quickly inspect whether beginning or end values differ significantly from their neighbors, as boundary events may skew the trend. For example,use an outlier detection method, such as the Z-score test or more robust methods like Hampel filtering or Local Outlier Factor (LOF), to identify values that significantly deviate from the typical range. \# Example 2 cycles [ currently improving]
+
+### Example 2: Cyclical/Seasonal Data
+
+In real-life rainfall time series, several types of cyclicity can make the Mann-Kendall (MK) test inappropriate or misleading for detecting trends. These issues arise because rainfall patterns are often affected by complex periodic and quasi-periodic cycles. Here’s a detailed overview of these challenges:
+
+Mann-Kendall (MK) is a robust tool for detecting monotonic trends, but interpreting results becomes more complex with cyclical or seasonal data—especially when seasonality is non-annual or nested across different time scales. MK may misinterpret cyclicity as a trend if periodic patterns are not accounted for, which is particularly relevant in climate data.
+
+**Key Points**:
+
+-   **Cyclic Seasonal Patterns (Non-Annual)**:\
+    Cyclic events don’t always align with an annual pattern. For instance, large-scale climate oscillations like ENSO (El Niño/La Niña) or the North Atlantic Oscillation (NAO) operate on irregular cycles, typically spanning 2–7 years. Multi-year or decadal oscillations like these can introduce non-annual fluctuations that MK may interpret as long-term trends if cyclicity is unaccounted for.
+
+-   **Nested Seasonality**:\
+    Climate data often includes seasonality at multiple levels, such as monthly or seasonal weather variations nested within multi-decadal climate cycles. These overlapping cycles can complicate MK trend detection. For example, monthly temperature variations may occur within a larger cyclic pattern driven by ocean temperatures or solar radiation, resulting in nested seasonality that can obscure true trends.
+
+-   **Nonstationary Cyclicity Due to Climate Change**:\
+    Climate change introduces an additional layer of complexity by making cycles nonstationary. Traditional cycles may change in frequency, intensity, or pattern over time, as seen in shifting precipitation patterns or temperature extremes. This nonstationarity can mislead MK, as it may perceive these changes as part of a stable trend rather than evolving cyclic behavior.
+
+------------------------------------------------------------------------
+
+### Example in Weather Data
+
+This issue is particularly relevant in climate and environmental data:
+
+-   **Irregular Multi-Year Cycles**: ENSO, the Madden Julian Oscillation, and other irregular cycles don’t follow a consistent period, but they often cause recurrent weather patterns (e.g., droughts, heavy rainfall) that repeat across multi-year intervals.
+
+-   **Decadal and Multi-Decadal Cycles**: Oceanic and atmospheric phenomena like the Pacific Decadal Oscillation (PDO) and Atlantic Multi-decadal Oscillation (AMO) operate on longer cycles, influencing temperatures and precipitation patterns over decades.
+
+-   **Nested Seasonal Patterns**: Monthly and seasonal variations occur within these longer cycles, creating multi-layered patterns. For instance, tropical precipitation can show strong monthly seasonality nested within broader ENSO-influenced patterns.
+
+### Example 1: Multidecadal Cycle (e.g., East African Rainfall)
+
+This example simulates a rainfall time series with a 20-year cycle, which could lead MK to interpret the cyclic pattern as a trend if it isn’t accounted for.
+
+```{r}
+
+
+# Generate synthetic multidecadal cycle data for a 40-year series
+set.seed(42)
+n_years <- 40
+years <- 1:n_years
+cycle_period <- 20  # ~20-year cycle
+amplitude <- 5
+baseline <- 10
+
+# Multidecadal cycle with noise
+rainfall_series <- baseline + amplitude * sin(2 * pi * years / cycle_period) + rnorm(n_years, mean = 0, sd = 1)
+
+# Plot the time series
+ggplot(data.frame(Year = years, Rainfall = rainfall_series), aes(x = Year, y = Rainfall)) +
+  geom_line(color = "steelblue") + geom_point(color = "steelblue") +
+  labs(title = "Multidecadal Cycle in Rainfall (40-Year Series)", x = "Year", y = "Rainfall (units)") +
+  theme_minimal()
+
+
+# Perform MK test on full 40-year series
+MannKendall(rainfall_series)  # May interpret as trend if cycle isn't recognized
+
+
+```
+
+------------------------------------------------------------------------
+
+### Recommendations
+
+If cyclical seasonality or multi-scale patterns are expected, consider these methods to reduce the risk of artifacts in MK analysis:
+
+-   **De-trend or De-seasonalize the Data**: Use decomposition methods (e.g., STL decomposition) to remove seasonal components and isolate the trend. This can prevent MK from misinterpreting cycles as trends.
+
+-   **Test with Multiple Time Frames**: Run MK tests on both shorter and longer windows to compare results. If cycles vary within certain windows, the trend may be driven by cyclicity rather than a true trend.
+
+-   **Spectral Analysis**: Perform spectral or periodogram analysis to detect significant periodic patterns. This can help distinguish between cyclic behavior and long-term trends before applying MK.
+
+-   **Comparative MK Test**: Apply MK both on raw data and on data where seasonal cycles have been filtered out to observe how the trend changes with and without seasonality.
+
+This approach helps avoid misinterpreting nested or non-annual seasonality as a monotonic trend, ensuring that the MK test reflects genuine long-term changes rather than cyclic patterns.
+
+# Example 3 Serial autocorrelation
+
+# Example 4 Step changes
+
+# Example 4 MAUP/Ecollogical fallacy
+
+Esp with changes in seasonal cycles e.g. rainy season starts later and covers less of ethiopa but you use an average for the country
+
+------------------------------------------------------------------------
+
+# NOTES :
+
+## Other from chatgpt
+
+### 1. **Irregular, Large-Scale Climate Oscillations**
+
+-   **Examples**: El Niño–Southern Oscillation (ENSO), North Atlantic Oscillation (NAO), Pacific Decadal Oscillation (PDO).
+-   **Issue**: These oscillations don’t follow a regular annual cycle and can vary in both frequency and intensity. For instance, ENSO events (El Niño/La Niña) might happen every 2-7 years but are unpredictable in timing and impact.
+-   **Effect on MK**: MK might misinterpret rainfall increases during El Niño events as a long-term upward trend or downward trend during La Niña events. This episodic nature creates “false trends” when these events are particularly strong in certain periods of the dataset.
+
+### 2. **Multi-Year or Decadal Cycles**
+
+-   **Examples**: Quasi-biennial oscillation, decadal wet/dry periods.
+-   **Issue**: Some regions experience natural cycles that last several years to decades, like periodic shifts between wetter and drier phases. Such cycles may repeat, but they aren’t aligned with a fixed annual or even semi-annual pattern.
+-   **Effect on MK**: MK might detect these decadal wet-dry phases as trends rather than cycles, especially if the data ends during an extreme phase (e.g., a prolonged drought or unusually wet period), making it appear as a persistent trend.
+
+### 3. **Seasonal Cyclicity with Long-Term Variability**
+
+-   **Examples**: Regular seasonal rainfall patterns with long-term increases or decreases in average intensity.
+-   **Issue**: Annual seasons are common in rainfall data, but over long periods, these seasons may become wetter or drier on average, leading to long-term variability in the seasonal pattern itself.
+-   **Effect on MK**: The Mann-Kendall test may pick up a trend due to the increasing intensity of seasonal peaks (e.g., more intense rainy seasons over time), even though the true pattern is a cyclic seasonal effect with some modulation in amplitude rather than a monotonic trend.
+
+### 4. **Anthropogenic Influences with Irregular Cycles**
+
+-   **Examples**: Urbanization, deforestation, irrigation, or land use changes that cause altered rainfall patterns.
+-   **Issue**: Human activities can lead to increased or decreased rainfall locally but may vary in timing and impact. For instance, irrigation might increase evaporation, affecting rainfall patterns irregularly rather than seasonally.
+-   **Effect on MK**: MK might misinterpret human-driven variability as a long-term trend when it is an irregular response to changing land use practices, especially when the impacts aren’t consistent over time.
+
+### 5. **Non-Annual, Sub-Seasonal Patterns (Intra-Seasonal Variability)**
+
+-   **Examples**: Intra-seasonal oscillations, like the Madden-Julian Oscillation, which affects rainfall within a season.
+-   **Issue**: Some oscillations within seasons lead to periodic increases in rainfall every few weeks, especially in tropical regions. These sub-seasonal patterns may shift the timing and amount of rainfall without creating a long-term trend.
+-   **Effect on MK**: This intra-seasonal cyclicity can create peaks within a season, confusing the Mann-Kendall test if interpreted as trends, especially if the timing shifts within the dataset (e.g., an early vs. late rainy season onset).
+
+### 6. **Step Changes or Abrupt Shifts in Baseline Conditions**
+
+-   **Examples**: Sudden shifts due to climate regime changes or extreme events, like volcanic eruptions or significant drought events.
+-   **Issue**: Rather than gradual trends, rainfall may exhibit abrupt changes, such as a sharp increase or decrease following a large volcanic eruption or the start of a persistent drought.
+-   **Effect on MK**: MK might interpret the baseline shift as part of a trend when it’s actually a one-time regime change. For example, a volcanic eruption that temporarily cools the climate could reduce rainfall for a few years, which may falsely appear as a declining trend.
+
+### 7. **Nonstationary Cyclicity Due to Climate Change**
+
+-   **Examples**: Increasing frequency of extreme rainfall events, shifting monsoon patterns due to warming.
+-   **Issue**: Climate change can alter the frequency, intensity, or timing of natural cycles, resulting in nonstationary (changing) cyclicity. This means that typical cycles may shift or intensify over time, which is difficult to separate from a genuine trend.
+-   **Effect on MK**: MK might detect a trend where there is actually a change in cycle characteristics due to climate change. For instance, more intense and frequent extreme rainfall events might appear as an upward trend when it's a shift in the amplitude and frequency of existing cycles.
+
+### Addressing These Issues in Rainfall Time Series
+
+When working with rainfall data influenced by these types of cyclicity, consider: - **Decomposing the Data**: Separate the cyclic components from any long-term trends (e.g., using seasonal decomposition or filtering). - **Using Seasonal or Non-Parametric Alternatives**: The **Seasonal Mann-Kendall test** or time series decomposition approaches (like STL decomposition) can isolate annual seasonality from longer trends. - **Applying Models for Nonstationary Cycles**: Generalized Additive Models (GAMs) or Fourier series expansions can capture nonstationary cyclic behavior and provide a more nuanced trend analysis.
+
+Recognizing these types of cyclicity helps ensure that trend analyses accurately reflect underlying processes, rather than misinterpreting complex cycles as simple monotonic trends.
+
+# Overall plan
+
+-   Do this until I'm certain i know every "red flag" to look for (short time-series, cycles etc)
+
+    -   Then apply them to CHIRPS/TAMSAT etc
+
+    -   And look for the red-flags and locations in the literature,\
+        alongside green-flags "whitening", improved versions etc.
+
+        -   A LOT of the problem is our use of jargon like "seasonality" - double meaning for just monthly/seasons.
+
+        -   pre-whitening, really?? what even is that
+
+        -   
+
+-   Then repeat for other statistics ( other versions of MK, sens, wavelet, PCR etc)
+
+    -   Maybe there will be places where THERES JUST NOT ENOUGH DATA TO COMMENT.
+    
+    
+    
+    
+    
+##  Motivation
+Interested in how information transfers. esp with chatgpt.
+
+So i thouhgt i would start with a simple enough statistic, the mann kendall test.
+
+### Start by...
+
+OK, forget extremes and even forget other aspects of weather for me. I want you, just for a moment to focus on rainfall. In your own experience humour me and think to yourself, how do you think rainfall has changed in your lifetime? If like me you moved across the world, how has it changed back home? Now.. this is a dangerous room to do this in. But generally, people don't immediately think of a time-series graph, or use words like linear. Normally, we use phrases like "it's got wetter since I was a kid"
+
+We're hardwired to do this
+
+-   Psych memory story
+
+And it also means that the concept of a trend is VERY enticing to humans. Its a simple story, one we can all understand and match against our own experiences. It's why initially labelling climate change as global warming caused so much of a misunderstanding.
+
+So.... I wanted to explore how trends are measured in weather data
+
