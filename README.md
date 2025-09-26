@@ -1,2 +1,2 @@
-# Mann_Kendall
+# Mann Kendall
 My Mann Kendall Research
